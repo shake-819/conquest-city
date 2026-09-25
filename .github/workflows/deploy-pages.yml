@@ -1,0 +1,73 @@
+# CITY WARS を GitHub Pages に公開するワークフロー
+#
+# 使い方:
+#   1. GitHub のリポジトリ → Settings → Pages → Source を「GitHub Actions」にする
+#   2. main ブランチに push する(または Actions タブから手動実行)
+#   3. 数分後、https://<ユーザー名>.github.io/<リポジトリ名>/ で遊べる
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同時に複数のデプロイが走らないようにする
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # ゲーム本体(rts-game)に必要な依存だけを入れる。
+      # --ignore-scripts: ビルドに不要なインストール時スクリプトを実行しない(安全のため)
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts --filter @workspace/rts-game...
+
+      - name: Type check
+        run: pnpm --filter @workspace/rts-game run typecheck
+
+      # BASE_PATH: プロジェクトサイトは /リポジトリ名/ 配下で公開されるため
+      - name: Build
+        run: pnpm --filter @workspace/rts-game run build
+        env:
+          BASE_PATH: /${{ github.event.repository.name }}/
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: artifacts/rts-game/dist/public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
