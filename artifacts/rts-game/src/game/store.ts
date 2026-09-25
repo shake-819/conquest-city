@@ -47,6 +47,7 @@ import {
   HERO_DEFINITIONS,
   calculateHeroSynergy,
   heroById,
+  heroStarRank,
 } from './heroes';
 import {
   RESEARCH_DEFINITIONS,
@@ -293,6 +294,83 @@ function spawnWave(wave: number, stageIndex: number): Unit[] {
 
 const STAGE_NAMES = ['1-1', '1-2', '1-3', '2-1', '2-2', '2-3'];
 const MAX_STAGE_WAVES = [3, 4, 5, 4, 5, 6];
+/** Star-rating difficulty shown on the stage select screen (1-4). Shared with hero shard rewards. */
+const STAGE_DIFFICULTY_STARS = [1, 2, 3, 2, 3, 4];
+
+/**
+ * Rarity odds for a stage-clear hero shard drop, keyed by the stage's difficulty stars.
+ * Harder stages skew toward rarer shards; the fallback bucket is 'common'.
+ */
+const HERO_SHARD_RARITY_ODDS: Record<number, { common: number; rare: number; legendary: number }> = {
+  1: { common: 0.85, rare: 0.15, legendary: 0 },
+  2: { common: 0.6, rare: 0.35, legendary: 0.05 },
+  3: { common: 0.35, rare: 0.45, legendary: 0.2 },
+  4: { common: 0.15, rare: 0.45, legendary: 0.4 },
+};
+
+interface HeroShardReward {
+  heroId: string;
+  heroNameJP: string;
+  amount: number;
+}
+
+/** Rolls a stage-clear hero shard reward: which hero, and how many shards (1-5, more on harder stages). */
+function rollHeroShardReward(stageIndex: number): HeroShardReward | null {
+  const stars = STAGE_DIFFICULTY_STARS[stageIndex] ?? 1;
+  const odds = HERO_SHARD_RARITY_ODDS[stars] ?? HERO_SHARD_RARITY_ODDS[1];
+  const roll = Math.random();
+  const rarity = roll < odds.legendary
+    ? 'legendary'
+    : roll < odds.legendary + odds.rare
+      ? 'rare'
+      : 'common';
+  const pool = HERO_DEFINITIONS.filter((hero) => hero.rarity === rarity);
+  const candidates = pool.length > 0 ? pool : HERO_DEFINITIONS;
+  if (candidates.length === 0) return null;
+  const hero = candidates[Math.floor(Math.random() * candidates.length)];
+  const amount = Math.min(5, stars + Math.floor(Math.random() * 2));
+  return { heroId: hero.id, heroNameJP: hero.nameJP, amount };
+}
+
+interface StageClearHeroPatch {
+  heroShards: Record<string, number>;
+  ownedHeroIds: string[];
+  selectedHeroId: string | null;
+  rewardMsg: string;
+}
+
+/**
+ * Applies a stage-clear hero shard drop on top of the current hero state.
+ * Newly-unlocked heroes (first time crossing the ☆1 threshold) are added to
+ * ownedHeroIds automatically, and auto-selected if no hero was selected yet.
+ */
+function applyStageClearHeroShards(
+  currentHeroShards: Record<string, number>,
+  currentOwnedHeroIds: string[],
+  currentSelectedHeroId: string | null,
+  stageIndex: number,
+): StageClearHeroPatch {
+  const reward = rollHeroShardReward(stageIndex);
+  if (!reward) {
+    return {
+      heroShards: currentHeroShards,
+      ownedHeroIds: currentOwnedHeroIds,
+      selectedHeroId: currentSelectedHeroId,
+      rewardMsg: '',
+    };
+  }
+  const before = currentHeroShards[reward.heroId] ?? 0;
+  const after = before + reward.amount;
+  const heroShards = { ...currentHeroShards, [reward.heroId]: after };
+  const wasOwned = currentOwnedHeroIds.includes(reward.heroId);
+  const justUnlocked = !wasOwned && heroStarRank(after) >= 1;
+  const ownedHeroIds = justUnlocked ? [...currentOwnedHeroIds, reward.heroId] : currentOwnedHeroIds;
+  const selectedHeroId = justUnlocked && !currentSelectedHeroId ? reward.heroId : currentSelectedHeroId;
+  const rewardMsg = justUnlocked
+    ? ` ${reward.heroNameJP}のかけら+${reward.amount}（ヒーロー解放！）`
+    : ` ${reward.heroNameJP}のかけら+${reward.amount}`;
+  return { heroShards, ownedHeroIds, selectedHeroId, rewardMsg };
+}
 
 /**
  * Apply post-battle casualties:
@@ -437,6 +515,8 @@ interface GameState {
   battleSettingsOrigin: BattleSettingsOrigin;
   /** Hero catalog ownership is separate from definitions so a future unlock system can replace it. */
   ownedHeroIds: string[];
+  /** Cumulative hero shards owned per hero ID. Star rank (☆1-5) is derived from this via heroStarRank(). */
+  heroShards: Record<string, number>;
   selectedHeroId: string | null;
   /** The one hero currently deployed in battle, or null outside battle. */
   battleHero: BattleHero | null;
@@ -582,6 +662,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   formation: 'gyorin',
   battleSettingsOrigin: 'town',
   ownedHeroIds: [],
+  heroShards: {},
   selectedHeroId: null,
   battleHero: null,
 
@@ -610,6 +691,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       killedTownUnitIds: [],
       battleInitialBuildingIds: [],
       ownedHeroIds: [],
+      heroShards: {},
       selectedHeroId: null,
       battleHero: null,
       message: '街を発展させよう！木材・石材を集めて本拠地をレベルアップ！',
@@ -1267,7 +1349,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   saveGame: () => {
     const state = get();
     const saveData = {
-      version: 8,
+      version: 9,
       savedAt: Date.now(),
       townGrid: state.townGrid,
       resources: state.resources,
@@ -1277,6 +1359,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       townHallUpgrade: state.townHallUpgrade,
       hospitalWounded: state.hospitalWounded,
       ownedHeroIds: state.ownedHeroIds,
+      heroShards: state.heroShards,
       selectedHeroId: state.selectedHeroId,
       researchedNodeIds: state.researchedNodeIds,
       activeResearchId: state.activeResearchId,
@@ -1304,6 +1387,22 @@ export const useGameStore = create<GameState>((set, get) => ({
       // Version 6 and earlier granted the whole catalog as starter heroes.
       // Treat those saves as unowned so the future acquisition system starts cleanly.
       const safeOwnedHeroIds = data.version >= 7 ? savedOwnedHeroIds : [];
+      const rawHeroShards = data.version >= 9 && data.heroShards && typeof data.heroShards === 'object'
+        ? data.heroShards
+        : {};
+      const heroShards: Record<string, number> = {};
+      for (const heroId of Object.keys(rawHeroShards)) {
+        if (!validHeroIds.has(heroId)) continue;
+        const value = rawHeroShards[heroId];
+        if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+          heroShards[heroId] = Math.floor(value);
+        }
+      }
+      // A hero can be owned (from an older save) without shard data; keep it selectable
+      // at ☆1 worth of shards so its star rank doesn't regress below "unlocked".
+      for (const heroId of safeOwnedHeroIds) {
+        if (!(heroId in heroShards)) heroShards[heroId] = 5;
+      }
       const selectedHeroId = typeof data.selectedHeroId === 'string' && safeOwnedHeroIds.includes(data.selectedHeroId)
         ? data.selectedHeroId
         : null;
@@ -1369,6 +1468,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         townHallUpgrade: data.townHallUpgrade ?? null,
         hospitalWounded: data.hospitalWounded ?? [],
         ownedHeroIds: safeOwnedHeroIds,
+        heroShards,
         selectedHeroId,
         researchPanelOpen: false,
         researchedNodeIds,
@@ -2165,10 +2265,14 @@ export const useGameStore = create<GameState>((set, get) => ({
       if (nextStage >= STAGE_NAMES.length) {
         set({ mode: 'victory', townGrid: casualties.townGrid, townUnits: casualties.townUnits, hospitalWounded: casualties.hospitalWounded, killedTownUnitIds: [], battleHero: null });
       } else {
+        const heroPatch = applyStageClearHeroShards(state.heroShards, state.ownedHeroIds, state.selectedHeroId, stageIndex);
         set({
           mode: 'stage_clear', stageIndex: nextStage,
           resources: { ...state.resources, gold: state.resources.gold + goldReward },
-          message: `ステージクリア！ゴールド+${goldReward}${casualties.casualtyMsg}`,
+          heroShards: heroPatch.heroShards,
+          ownedHeroIds: heroPatch.ownedHeroIds,
+          selectedHeroId: heroPatch.selectedHeroId,
+          message: `ステージクリア！ゴールド+${goldReward}${heroPatch.rewardMsg}${casualties.casualtyMsg}`,
           messageTimer: 4,
           townGrid: casualties.townGrid, townUnits: casualties.townUnits,
            hospitalWounded: casualties.hospitalWounded, killedTownUnitIds: [], battleHero: null,
@@ -2191,10 +2295,14 @@ export const useGameStore = create<GameState>((set, get) => ({
       if (nextStage >= STAGE_NAMES.length) {
         set({ mode: 'victory', townGrid: casualties.townGrid, townUnits: casualties.townUnits, hospitalWounded: casualties.hospitalWounded, killedTownUnitIds: [], battleHero: null });
       } else {
+        const heroPatch = applyStageClearHeroShards(state.heroShards, state.ownedHeroIds, state.selectedHeroId, stageIndex);
         set({
           mode: 'stage_clear', stageIndex: nextStage,
           resources: { ...state.resources, gold: state.resources.gold + goldReward },
-          message: `ステージクリア！ゴールド+${goldReward}${casualties.casualtyMsg}`,
+          heroShards: heroPatch.heroShards,
+          ownedHeroIds: heroPatch.ownedHeroIds,
+          selectedHeroId: heroPatch.selectedHeroId,
+          message: `ステージクリア！ゴールド+${goldReward}${heroPatch.rewardMsg}${casualties.casualtyMsg}`,
           messageTimer: 4,
           townGrid: casualties.townGrid, townUnits: casualties.townUnits,
            hospitalWounded: casualties.hospitalWounded, killedTownUnitIds: [], battleHero: null,
@@ -2221,4 +2329,4 @@ export const useGameStore = create<GameState>((set, get) => ({
   },
 }));
 
-export { STAGE_NAMES, MAX_STAGE_WAVES, bWorldX, bWorldZ };
+export { STAGE_NAMES, MAX_STAGE_WAVES, STAGE_DIFFICULTY_STARS, bWorldX, bWorldZ };
