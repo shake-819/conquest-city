@@ -176,6 +176,41 @@ export function heroById(id: string | null | undefined): HeroDefinition | undefi
   return id ? HERO_DEFINITIONS.find((hero) => hero.id === id) : undefined;
 }
 
+/**
+ * Cumulative shard totals required to reach each star rank.
+ * Index 0 = ☆1 (unlock), index 4 = ☆5 (max).
+ */
+export const HERO_STAR_THRESHOLDS = [5, 20, 50, 100, 200];
+export const HERO_MAX_STAR = HERO_STAR_THRESHOLDS.length;
+
+/** Star rank (0 = not yet unlocked, 1-5) implied by a hero's total shard count. */
+export function heroStarRank(shardCount: number): number {
+  let rank = 0;
+  for (const threshold of HERO_STAR_THRESHOLDS) {
+    if (shardCount >= threshold) rank += 1;
+    else break;
+  }
+  return rank;
+}
+
+export interface HeroShardProgress {
+  /** Current star rank, 0-5. 0 means the hero is still locked. */
+  star: number;
+  /** Shards currently held for this hero. */
+  shards: number;
+  /** Shard total needed to reach the next star, or null if already at max star. */
+  nextThreshold: number | null;
+  /** Shard total needed to reach the current star (0 for a locked hero). */
+  currentThreshold: number;
+}
+
+export function heroShardProgress(shardCount: number): HeroShardProgress {
+  const star = heroStarRank(shardCount);
+  const currentThreshold = star > 0 ? HERO_STAR_THRESHOLDS[star - 1] : 0;
+  const nextThreshold = star < HERO_MAX_STAR ? HERO_STAR_THRESHOLDS[star] : null;
+  return { star, shards: shardCount, nextThreshold, currentThreshold };
+}
+
 export interface HeroSynergy {
   score: number;
   matchingCount: number;
