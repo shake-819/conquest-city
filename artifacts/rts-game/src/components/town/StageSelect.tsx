@@ -1,5 +1,5 @@
 import { useGameStore } from '../../game/store';
-import { STAGE_NAMES } from '../../game/store';
+import { STAGE_NAMES, STAGE_DIFFICULTY_STARS } from '../../game/store';
 import { FORMATION_CONFIGS } from '../../game/constants';
 import { FORMATION_COLORS, STRATEGIES } from './BattleSettings';
 import {
@@ -8,6 +8,7 @@ import {
   HERO_RARITY_META,
   calculateHeroSynergy,
   heroById,
+  heroShardProgress,
   heroSkillSummary,
 } from '../../game/heroes';
 
@@ -19,6 +20,7 @@ export function StageSelect() {
   const townLevel = useGameStore((s) => s.townLevel);
   const townUnits = useGameStore((s) => s.townUnits);
   const ownedHeroIds = useGameStore((s) => s.ownedHeroIds);
+  const heroShards = useGameStore((s) => s.heroShards);
   const selectedHeroId = useGameStore((s) => s.selectedHeroId);
   const setSelectedHero = useGameStore((s) => s.setSelectedHero);
   const goToBattleSettings = useGameStore((s) => s.goToBattleSettings);
@@ -28,7 +30,7 @@ export function StageSelect() {
     { chapter: 'チャプター2', stages: [3, 4, 5], unlock: 1 },
   ];
 
-  const stageDiff = ['⭐', '⭐⭐', '⭐⭐⭐', '⭐⭐', '⭐⭐⭐', '⭐⭐⭐⭐'];
+  const stageDiff = STAGE_DIFFICULTY_STARS.map((n) => '⭐'.repeat(n));
   const stageDesc = [
     '少数の敵 - 初戦',
     '敵が増加',
@@ -106,20 +108,28 @@ export function StageSelect() {
           <div style={{ fontSize: 13, fontWeight: 700, color: '#ffd166', letterSpacing: 1 }}>
             👑 出撃ヒーローを選択（1人）
           </div>
-          <span style={{ color: '#888', fontSize: 11 }}>{ownedHeroes.length}人所持</span>
+          <span style={{ color: '#888', fontSize: 11 }}>{ownedHeroes.length}/{HERO_DEFINITIONS.length}人解放</span>
         </div>
-        {ownedHeroes.length > 0 ? (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 8 }}>
-            {ownedHeroes.map((hero) => {
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 8 }}>
+          {HERO_DEFINITIONS.map((hero) => {
             const isActive = selectedHero?.id === hero.id;
             const rarity = HERO_RARITY_META[hero.rarity];
             const archetype = HERO_ARCHETYPE_META[hero.archetype];
             const synergy = calculateHeroSynergy(hero, townUnits);
+            const progress = heroShardProgress(heroShards[hero.id] ?? 0);
+            const locked = progress.star === 0;
+            const progressSpan = progress.nextThreshold !== null
+              ? progress.nextThreshold - progress.currentThreshold
+              : 0;
+            const progressRatio = progress.nextThreshold !== null
+              ? Math.min(1, (progress.shards - progress.currentThreshold) / progressSpan)
+              : 1;
             return (
               <button
                 key={hero.id}
-                onClick={() => setSelectedHero(hero.id)}
+                onClick={() => !locked && setSelectedHero(hero.id)}
                 aria-pressed={isActive}
+                disabled={locked}
                 style={{
                   textAlign: 'left',
                   background: isActive ? `${hero.color}22` : 'rgba(255,255,255,0.04)',
@@ -127,34 +137,58 @@ export function StageSelect() {
                   borderRadius: 10,
                   color: '#fff',
                   padding: '10px 12px',
-                  cursor: 'pointer',
+                  cursor: locked ? 'default' : 'pointer',
                   minHeight: 112,
+                  opacity: locked ? 0.55 : 1,
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ fontSize: 24 }}>{hero.emoji}</span>
+                  <span style={{ fontSize: 24, filter: locked ? 'grayscale(1)' : 'none' }}>
+                    {locked ? '🔒' : hero.emoji}
+                  </span>
                   <span style={{ fontWeight: 800, fontSize: 13, flex: 1 }}>{hero.nameJP}</span>
                   {isActive && <span style={{ color: hero.color, fontSize: 11 }}>選択中</span>}
                 </div>
-                <div style={{ display: 'flex', gap: 8, marginTop: 6, fontSize: 10 }}>
+                <div style={{ display: 'flex', gap: 8, marginTop: 6, fontSize: 10, alignItems: 'center' }}>
                   <span style={{ color: rarity.color, fontWeight: 700 }}>{rarity.label}</span>
                   <span style={{ color: '#bbb' }}>{archetype.icon} {archetype.label}</span>
+                  <span style={{ color: '#ffd166', marginLeft: 'auto' }}>
+                    {progress.star > 0 ? '★'.repeat(progress.star) : '未解放'}
+                  </span>
                 </div>
-                <div style={{ color: '#aaa', fontSize: 10, lineHeight: 1.45, marginTop: 5 }}>
-                  {hero.skill.nameJP} · {synergy.matchingCount}名 / 平均Tier {synergy.averageTier.toFixed(1)}
-                </div>
+                {locked ? (
+                  <div style={{ marginTop: 7 }}>
+                    <div style={{ height: 5, borderRadius: 3, background: 'rgba(255,255,255,0.12)', overflow: 'hidden' }}>
+                      <div style={{
+                        width: `${Math.min(1, progress.shards / 5) * 100}%`,
+                        height: '100%', background: rarity.color,
+                      }} />
+                    </div>
+                    <div style={{ color: '#999', fontSize: 10, marginTop: 4 }}>
+                      かけら {progress.shards}/5 で解放
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ color: '#aaa', fontSize: 10, lineHeight: 1.45, marginTop: 5 }}>
+                      {hero.skill.nameJP} · {synergy.matchingCount}名 / 平均Tier {synergy.averageTier.toFixed(1)}
+                    </div>
+                    {progress.nextThreshold !== null && (
+                      <div style={{ marginTop: 6 }}>
+                        <div style={{ height: 5, borderRadius: 3, background: 'rgba(255,255,255,0.12)', overflow: 'hidden' }}>
+                          <div style={{ width: `${progressRatio * 100}%`, height: '100%', background: hero.color }} />
+                        </div>
+                        <div style={{ color: '#999', fontSize: 10, marginTop: 4 }}>
+                          かけら {progress.shards}/{progress.nextThreshold} で次の★
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
               </button>
             );
-            })}
-          </div>
-        ) : (
-          <div style={{
-            border: '1px dashed rgba(255,215,102,0.3)', borderRadius: 10,
-            padding: '18px 14px', textAlign: 'center', color: '#aaa', fontSize: 12,
-          }}>
-            ヒーローはまだ所持していません。今後追加予定の入手システムで獲得できます。
-          </div>
-        )}
+          })}
+        </div>
         {selectedHero && selectedHeroSynergy && (
           <div style={{
             marginTop: 12,
