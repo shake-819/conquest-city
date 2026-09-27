@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { CSSProperties } from 'react';
+import { ResearchTreeView } from './ResearchTreeView';
 
 export type ResearchNodeView = {
   id: string;
@@ -17,7 +18,7 @@ export type ResearchNodeView = {
   canAfford: boolean;
 };
 
-type ResearchPanelProps = {
+export type ResearchPanelProps = {
   nodes: ResearchNodeView[];
   resources: { gold: number; wood: number; stone: number; food: number };
   researchTimer: number | null;
@@ -575,22 +576,16 @@ export function ResearchPanel({
                       {selectedCategoryNodes.length} 計画
                     </span>
                     <span style={{ flex: 1, height: 1, background: `linear-gradient(90deg, ${selectedCategoryNodes[0].categoryColor}55, transparent)` }} />
+                    <span style={{ color: '#667477', fontSize: 9, fontWeight: 800, letterSpacing: '0.04em' }}>
+                      上流 → 下流
+                    </span>
                   </div>
-                  <div style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))',
-                    gap: 11,
-                  }}>
-                    {selectedCategoryNodes.map((node) => (
-                      <NodeCard
-                        key={node.id}
-                        node={node}
-                        resources={resources}
-                        researchTimer={researchTimer}
-                        onResearch={onResearch}
-                      />
-                    ))}
-                  </div>
+                  <ResearchTreeView
+                    nodes={selectedCategoryNodes}
+                    resources={resources}
+                    researchTimer={researchTimer}
+                    onResearch={onResearch}
+                  />
                 </section>
             )}
           </div>
