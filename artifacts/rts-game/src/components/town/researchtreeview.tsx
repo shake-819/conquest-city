@@ -3,12 +3,13 @@ import type { CSSProperties } from 'react';
 import type { ResearchNodeView, ResearchPanelProps } from './ResearchPanel';
 import { layoutResearchTree } from './researchtreelayout';
 
-const COL_WIDTH = 240;
-const ROW_HEIGHT = 100;
+// 縦ツリー: depth(前提の深さ)= 縦位置、lane(兄弟の並び)= 横位置
+const LANE_WIDTH = 224;   // 横方向の1レーン分の幅(ノード幅 + 余白)
+const DEPTH_HEIGHT = 124; // 縦方向の1段分の高さ(ノード高 + 接続線用の余白)
 const NODE_WIDTH = 196;
 const NODE_HEIGHT = 76;
 const PAD_X = 28;
-const PAD_Y = 30;
+const PAD_Y = 28;
 
 const statusMeta: Record<ResearchNodeView['state'], { label: string; color: string }> = {
   locked: { label: '前提未達', color: '#7d898c' },
@@ -17,9 +18,9 @@ const statusMeta: Record<ResearchNodeView['state'], { label: string; color: stri
   researched: { label: '完了', color: '#82b8a8' },
 };
 
-function nodeCenter(node: { col: number; row: number }, edge: 'left' | 'right') {
-  const x = PAD_X + node.col * COL_WIDTH + (edge === 'right' ? NODE_WIDTH : 0);
-  const y = PAD_Y + node.row * ROW_HEIGHT + NODE_HEIGHT / 2;
+function nodeAnchor(node: { depth: number; lane: number }, edge: 'top' | 'bottom') {
+  const x = PAD_X + node.lane * LANE_WIDTH + NODE_WIDTH / 2;
+  const y = PAD_Y + node.depth * DEPTH_HEIGHT + (edge === 'bottom' ? NODE_HEIGHT : 0);
   return { x, y };
 }
 
@@ -28,7 +29,7 @@ function TreeNodeChip({
   isSelected,
   onSelect,
 }: {
-  node: ResearchNodeView & { col: number; row: number };
+  node: ResearchNodeView & { depth: number; lane: number };
   isSelected: boolean;
   onSelect: (id: string) => void;
 }) {
@@ -44,8 +45,8 @@ function TreeNodeChip({
       aria-pressed={isSelected}
       style={{
         position: 'absolute',
-        left: PAD_X + node.col * COL_WIDTH,
-        top: PAD_Y + node.row * ROW_HEIGHT,
+        left: PAD_X + node.lane * LANE_WIDTH,
+        top: PAD_Y + node.depth * DEPTH_HEIGHT,
         width: NODE_WIDTH,
         height: NODE_HEIGHT,
         display: 'flex',
@@ -127,11 +128,11 @@ function TreeNodeChip({
   );
 }
 
-function connectorPath(from: { col: number; row: number }, to: { col: number; row: number }): string {
-  const start = nodeCenter(from, 'right');
-  const end = nodeCenter(to, 'left');
-  const dx = Math.max((end.x - start.x) * 0.5, 24);
-  return `M ${start.x} ${start.y} C ${start.x + dx} ${start.y}, ${end.x - dx} ${end.y}, ${end.x} ${end.y}`;
+function connectorPath(from: { depth: number; lane: number }, to: { depth: number; lane: number }): string {
+  const start = nodeAnchor(from, 'bottom');
+  const end = nodeAnchor(to, 'top');
+  const dy = Math.max((end.y - start.y) * 0.5, 20);
+  return `M ${start.x} ${start.y} C ${start.x} ${start.y + dy}, ${end.x} ${end.y - dy}, ${end.x} ${end.y}`;
 }
 
 function TreeDetailPanel({
@@ -150,6 +151,9 @@ function TreeDetailPanel({
     flexDirection: 'column',
     gap: 12,
     width: '100%',
+    position: 'sticky',
+    top: 12,
+    alignSelf: 'start',
     padding: '16px 18px',
     background: 'linear-gradient(160deg, rgba(20, 32, 35, 0.9), rgba(10, 17, 20, 0.94))',
     border: '1px solid rgba(155, 183, 174, 0.2)',
@@ -290,8 +294,8 @@ export function ResearchTreeView({
   const activeId = layout.nodes.some((n) => n.id === selectedId) ? selectedId : defaultSelected;
   const selectedNode = layout.nodes.find((n) => n.id === activeId);
 
-  const width = PAD_X * 2 + layout.colCount * COL_WIDTH - (COL_WIDTH - NODE_WIDTH);
-  const height = PAD_Y * 2 + layout.rowCount * ROW_HEIGHT - (ROW_HEIGHT - NODE_HEIGHT);
+  const width = PAD_X * 2 + layout.laneCount * LANE_WIDTH - (LANE_WIDTH - NODE_WIDTH);
+  const height = PAD_Y * 2 + layout.depthCount * DEPTH_HEIGHT - (DEPTH_HEIGHT - NODE_HEIGHT);
 
   return (
     <div style={{
@@ -303,15 +307,14 @@ export function ResearchTreeView({
       <div
         style={{
           position: 'relative',
-          minHeight: Math.max(height, 200),
           overflowX: 'auto',
-          overflowY: 'hidden',
+          overflowY: 'visible',
           background: 'rgba(5, 11, 14, 0.4)',
           border: '1px dashed rgba(155, 183, 174, 0.16)',
           scrollbarColor: '#526562 #101a1d',
         }}
       >
-        <div style={{ position: 'relative', width: Math.max(width, 0), height: Math.max(height, 200) }}>
+        <div style={{ position: 'relative', width: Math.max(width, 0), height: Math.max(height, 120) }}>
           <svg
             width={width}
             height={height}
