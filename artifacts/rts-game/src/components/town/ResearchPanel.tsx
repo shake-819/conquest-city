@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { CSSProperties } from 'react';
-import { ResearchTreeView } from './ResearchTreeView';
+import { ResearchTreeView } from './researchtreeview';
 
 export type ResearchNodeView = {
   id: string;
