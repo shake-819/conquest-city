@@ -1,8 +1,8 @@
 import type { ResearchNodeView } from './ResearchPanel';
 
 export interface TreeLayoutNode extends ResearchNodeView {
-  col: number;
-  row: number;
+  depth: number;
+  lane: number;
 }
 
 export interface TreeEdge {
@@ -14,15 +14,15 @@ export interface TreeEdge {
 export interface TreeLayout {
   nodes: TreeLayoutNode[];
   edges: TreeEdge[];
-  colCount: number;
-  rowCount: number;
+  depthCount: number;
+  laneCount: number;
 }
 
 /**
  * 上流(前提なし) -> 下流(前提あり) のツリー/フォレストのレイアウトを計算する。
- * - col: 前提チェーンの深さ(0 が最上流)
- * - row: 兄弟ノード同士が重ならないように割り当てる縦位置(葉ノードから順に採番し、
- *        親ノードは子ノードの行の平均を取ることで、接続線が自然にまとまる)
+ * - depth: 前提チェーンの深さ(0 が最上流 = 画面の一番上)
+ * - lane: 兄弟ノード同士が重ならないように割り当てる横位置(葉ノードから順に採番し、
+ *        親ノードは子ノードの横位置の平均を取ることで、接続線が自然にまとまる)
  *
  * 1つの前提ノードから複数の子ノードがぶら下がる「分岐」も、
  * 同じ prerequisiteId を持つノードが複数存在するだけで自動的に扱える。
@@ -45,35 +45,35 @@ export function layoutResearchTree(nodes: ResearchNodeView[]): TreeLayout {
     }
   });
 
-  const col = new Map<string, number>();
-  const row = new Map<string, number>();
-  let nextLeafRow = 0;
+  const depthOf = new Map<string, number>();
+  const laneOf = new Map<string, number>();
+  let nextLeafLane = 0;
 
-  function assignCol(id: string, depth: number) {
-    col.set(id, Math.max(depth, col.get(id) ?? 0));
-    (childrenOf.get(id) ?? []).forEach((childId) => assignCol(childId, depth + 1));
+  function assignDepth(id: string, level: number) {
+    depthOf.set(id, Math.max(level, depthOf.get(id) ?? 0));
+    (childrenOf.get(id) ?? []).forEach((childId) => assignDepth(childId, level + 1));
   }
-  roots.forEach((id) => assignCol(id, 0));
+  roots.forEach((id) => assignDepth(id, 0));
 
-  function assignRow(id: string): number {
+  function assignLane(id: string): number {
     const children = childrenOf.get(id) ?? [];
     if (children.length === 0) {
-      const r = nextLeafRow;
-      nextLeafRow += 1;
-      row.set(id, r);
+      const r = nextLeafLane;
+      nextLeafLane += 1;
+      laneOf.set(id, r);
       return r;
     }
-    const childRows = children.map(assignRow);
-    const r = childRows.reduce((sum, value) => sum + value, 0) / childRows.length;
-    row.set(id, r);
+    const childLanes = children.map(assignLane);
+    const r = childLanes.reduce((sum, value) => sum + value, 0) / childLanes.length;
+    laneOf.set(id, r);
     return r;
   }
-  roots.forEach(assignRow);
+  roots.forEach(assignLane);
 
   const layoutNodes: TreeLayoutNode[] = nodes.map((node) => ({
     ...node,
-    col: col.get(node.id) ?? 0,
-    row: row.get(node.id) ?? 0,
+    depth: depthOf.get(node.id) ?? 0,
+    lane: laneOf.get(node.id) ?? 0,
   }));
 
   const edges: TreeEdge[] = [];
@@ -87,8 +87,8 @@ export function layoutResearchTree(nodes: ResearchNodeView[]): TreeLayout {
     }
   });
 
-  const colCount = layoutNodes.reduce((max, node) => Math.max(max, node.col + 1), 0);
-  const rowCount = Math.max(nextLeafRow, 1);
+  const depthCount = layoutNodes.reduce((max, node) => Math.max(max, node.depth + 1), 0);
+  const laneCount = Math.max(nextLeafLane, 1);
 
-  return { nodes: layoutNodes, edges, colCount, rowCount };
+  return { nodes: layoutNodes, edges, depthCount, laneCount };
 }
