@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { ResearchNodeView, ResearchPanelProps } from './ResearchPanel';
-import { layoutResearchTree } from './researchTreeLayout';
+import { layoutResearchTree } from './researchtreelayout';
 
 const COL_WIDTH = 240;
 const ROW_HEIGHT = 100;
