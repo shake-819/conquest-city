@@ -17,6 +17,14 @@ export interface PvpBuildingEntry {
   row: number;
 }
 
+/** 対戦で奪える資源(CPUの所持資源) */
+export interface PvpResources {
+  gold: number;
+  food: number;
+  wood: number;
+  stone: number;
+}
+
 /** 仮想DBに保存される「対戦用のプレイデータ」(自分もCPUも同じ形) */
 export interface PvpProfile {
   id: string;
@@ -33,6 +41,8 @@ export interface PvpProfile {
   researchedNodeIds: string[];
   units: PvpUnitEntry[];
   buildings: PvpBuildingEntry[];
+  /** CPUの所持資源(CPUレベルの上限いっぱい)。本拠地を倒すと半分を獲得できる。人間側は未使用 */
+  resources?: PvpResources;
   /** 表示・CPU生成用の目安戦力 */
   power: number;
   /** CPUの強さラベル (人間は undefined) */
@@ -54,6 +64,8 @@ export interface PvpBattleRecord {
   ratingBefore: number;
   ratingAfter: number;
   goldReward: number;
+  /** 略奪した資源(上限で切り捨て後の実獲得量)。古い記録には無い */
+  loot?: PvpResources;
   durationSec: number;
 }
 
@@ -85,6 +97,10 @@ export interface PvpResultInfo {
   ratingBefore: number;
   ratingAfter: number;
   goldReward: number;
+  /** 略奪で実際に増えた資源 */
+  loot: PvpResources;
+  /** 相手の所持資源の半分のうち、自分の上限を超えて切り捨てられた分 */
+  lootLost: PvpResources;
   durationSec: number;
   /** 倒したCPUがDBから消えたか */
   opponentRemoved: boolean;
