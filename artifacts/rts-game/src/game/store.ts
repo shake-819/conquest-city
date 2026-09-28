@@ -57,9 +57,21 @@ import {
   resourceProductionResearchMultiplier,
   unitResearchMultipliers,
 } from './research';
+import { pvpRepo } from './pvp/repository';
+import { buildPlayerProfile } from './pvp/snapshot';
+import { topUpCpuProfiles } from './pvp/cpu';
+import { PLAYER_PROFILE_ID } from './pvp/types';
+import type {
+  PvpBattleRecord,
+  PvpBattleState,
+  PvpEndReason,
+  PvpOutcome,
+  PvpProfile,
+  PvpResultInfo,
+} from './pvp/types';
 
-export type GameMode = 'menu' | 'town' | 'stage_select' | 'battle_settings' | 'battle' | 'stage_clear' | 'victory' | 'defeat';
-export type BattleSettingsOrigin = 'menu' | 'town' | 'stage_select';
+export type GameMode = 'menu' | 'town' | 'stage_select' | 'battle_settings' | 'battle' | 'stage_clear' | 'victory' | 'defeat' | 'pvp_lobby' | 'pvp_result';
+export type BattleSettingsOrigin = 'menu' | 'town' | 'stage_select' | 'pvp_lobby';
 export type SelectedTool = BuildingType | 'select' | 'demolish';
 
 export const TOWN_COLS = 14;
@@ -253,6 +265,90 @@ function createBattleHero(selectedHeroId: string | null, townUnits: TownUnit[], 
     state: 'idle',
     skillRequested: false,
   };
+}
+
+// ─── ローカル対戦(PvP) ─────────────────────────────────────────────────
+const PVP_TIME_LIMIT = 180;
+const PVP_MAX_ENEMY_TOWERS = 6;
+
+/** Eloレーティングの増減(K=32) */
+function eloDelta(myRating: number, oppRating: number, won: boolean): number {
+  const expected = 1 / (1 + Math.pow(10, (oppRating - myRating) / 400));
+  return Math.round(32 * ((won ? 1 : 0) - expected));
+}
+
+/** DBのプレイデータ → 街の兵士リスト */
+function pvpProfileToTownUnits(p: PvpProfile): TownUnit[] {
+  return p.units.map((u, i) => ({ id: `${p.id}-u${i}`, type: u.type, level: u.level, gridX: 0, gridZ: 0 }));
+}
+
+/** DBのプレイデータ → 街のグリッド(自分側の建物を戦場に置くために使う) */
+function pvpProfileToGrid(p: PvpProfile): TownGrid {
+  const grid = emptyGrid();
+  let hasHall = false;
+  for (const e of p.buildings) {
+    if (e.row < 0 || e.row >= TOWN_ROWS || e.col < 0 || e.col >= TOWN_COLS) continue;
+    const baseHp = BUILDING_CONFIGS[e.type]?.maxHp ?? 100;
+    const maxHp = Math.round(baseHp * buildingLevelMultiplier(e.type, e.level));
+    const isHall = e.type === 'townhall';
+    if (isHall) hasHall = true;
+    grid[e.row][e.col] = {
+      id: isHall ? 'player-base' : `pvp-b-${e.col}-${e.row}`,
+      type: e.type,
+      gridX: e.col,
+      gridZ: e.row,
+      hp: maxHp,
+      maxHp,
+      faction: 'player',
+      level: e.level,
+      productionTimer: 0,
+    };
+  }
+  if (!hasHall) grid[Math.floor(TOWN_ROWS / 2)][1] = initGrid()[Math.floor(TOWN_ROWS / 2)][1];
+  return grid;
+}
+
+/** 相手の本拠地と防衛タワー(戦場の右側に鏡写しで配置) */
+function pvpEnemyBuildings(opp: PvpProfile): Building[] {
+  const baseHp = BUILDING_CONFIGS.townhall.maxHp;
+  const buildings: Building[] = [
+    {
+      id: 'enemy-base',
+      type: 'townhall',
+      gridX: BATTLE_COLS - 2,
+      gridZ: Math.floor(BATTLE_ROWS / 2),
+      hp: baseHp,
+      maxHp: baseHp,
+      faction: 'enemy',
+      level: 1,
+      productionTimer: 0,
+    },
+  ];
+  opp.buildings
+    .filter((b) => b.type === 'tower')
+    .slice(0, PVP_MAX_ENEMY_TOWERS)
+    .forEach((t, i) => {
+      const bCol = Math.min(t.col + 1, PLAYER_ZONE_COLS - 1);
+      const maxHp = Math.round((BUILDING_CONFIGS.tower?.maxHp ?? 200) * buildingLevelMultiplier('tower', t.level));
+      buildings.push({
+        id: `enemy-tower-${i}`,
+        type: 'tower',
+        gridX: BATTLE_COLS - 1 - bCol,
+        gridZ: Math.min(BATTLE_ROWS - 1, Math.floor(t.row * (BATTLE_ROWS / TOWN_ROWS))),
+        hp: maxHp,
+        maxHp,
+        faction: 'enemy',
+        level: t.level,
+        productionTimer: 0,
+      });
+    });
+  return buildings;
+}
+
+/** 相手の兵士を、自分側と同じ計算(陣形・研究・レベル)で作って左右反転する */
+function pvpEnemyUnits(opp: PvpProfile): Unit[] {
+  const made = townUnitsToPlayerUnits(pvpProfileToTownUnits(opp), opp.formation, opp.researchedNodeIds);
+  return made.map((u) => ({ ...u, faction: 'enemy' as const, townUnitId: undefined, x: -u.x }));
 }
 
 function spawnWave(wave: number, stageIndex: number): Unit[] {
@@ -521,6 +617,24 @@ interface GameState {
   /** The one hero currently deployed in battle, or null outside battle. */
   battleHero: BattleHero | null;
 
+  // ── ローカル対戦(PvP) ──
+  /** 対戦中の情報。対戦していないときは null */
+  pvp: PvpBattleState | null;
+  /** DBから読み込んだ自分のプレイデータ */
+  pvpMe: PvpProfile | null;
+  /** DBにいるCPUの一覧 */
+  pvpRoster: PvpProfile[];
+  /** 最近の対戦ログ */
+  pvpLog: PvpBattleRecord[];
+  pvpResult: PvpResultInfo | null;
+  pvpBusy: boolean;
+
+  openPvpLobby: () => Promise<void>;
+  startPvpBattle: (opponentId: string) => Promise<void>;
+  finishPvp: (outcome: PvpOutcome, reason: PvpEndReason) => void;
+  forfeitPvp: () => void;
+  backToPvpLobby: () => void;
+
   goToMenu: () => void;
   startTown: () => void;
   goToStageSelect: () => void;
@@ -666,6 +780,13 @@ export const useGameStore = create<GameState>((set, get) => ({
   selectedHeroId: null,
   battleHero: null,
 
+  pvp: null,
+  pvpMe: null,
+  pvpRoster: [],
+  pvpLog: [],
+  pvpResult: null,
+  pvpBusy: false,
+
   showMessage: (msg, dur = 3) => set({ message: msg, messageTimer: dur }),
 
   goToMenu: () => set({ mode: 'menu' }),
@@ -754,6 +875,240 @@ export const useGameStore = create<GameState>((set, get) => ({
         ? `ステージ ${STAGE_NAMES[stageIdx]} 開始！${heroDefinition.emoji} ${heroDefinition.nameJP}と兵士${playerUnits.length}名で戦え！`
         : `ステージ ${STAGE_NAMES[stageIdx]} 開始！兵士${playerUnits.length}名で戦え！`,
       messageTimer: 4,
+    });
+  },
+
+  openPvpLobby: async () => {
+    const s0 = get();
+    set({ mode: 'pvp_lobby', pvpBusy: true, pvpResult: null });
+    try {
+      // 1) いまの自分のプレイデータをDBに保存
+      const existing = await pvpRepo.getProfile(PLAYER_PROFILE_ID);
+      const me = buildPlayerProfile(
+        {
+          townGridBuildings: gridToBuildings(s0.townGrid),
+          townUnits: s0.townUnits,
+          townLevel: s0.townLevel,
+          formation: s0.formation,
+          strategy: s0.battleStrategy,
+          heroId: s0.selectedHeroId,
+          researchedNodeIds: s0.researchedNodeIds,
+        },
+        existing,
+      );
+      await pvpRepo.upsertProfile(me);
+
+      // 2) CPUが減っていたら自動で追加
+      const all = await pvpRepo.listProfiles();
+      let cpus = all.filter((p) => p.isCpu);
+      const added = topUpCpuProfiles(cpus, me);
+      if (added.length > 0) {
+        await pvpRepo.upsertProfiles(added);
+        cpus = [...cpus, ...added];
+      }
+
+      const log = await pvpRepo.listLog(8);
+      set({ pvpMe: me, pvpRoster: cpus, pvpLog: log, pvpBusy: false });
+    } catch (e) {
+      console.error('PvP lobby load failed', e);
+      set({ pvpBusy: false });
+    }
+  },
+
+  startPvpBattle: async (opponentId) => {
+    const s0 = get();
+    if (s0.pvpBusy || s0.mode !== 'pvp_lobby') return;
+    set({ pvpBusy: true });
+    try {
+      // 陣形・戦術・兵士がロビーで変わっている可能性があるので、最新の自分のデータをDBに保存し直す
+      const existing = await pvpRepo.getProfile(PLAYER_PROFILE_ID);
+      await pvpRepo.upsertProfile(
+        buildPlayerProfile(
+          {
+            townGridBuildings: gridToBuildings(s0.townGrid),
+            townUnits: s0.townUnits,
+            townLevel: s0.townLevel,
+            formation: s0.formation,
+            strategy: s0.battleStrategy,
+            heroId: s0.selectedHeroId,
+            researchedNodeIds: s0.researchedNodeIds,
+          },
+          existing,
+        ),
+      );
+
+      // DBから自分と相手のデータを読み込んで戦闘を組み立てる
+      const [me, opp] = await Promise.all([pvpRepo.getProfile(PLAYER_PROFILE_ID), pvpRepo.getProfile(opponentId)]);
+      if (!me || !opp) {
+        set({ pvpBusy: false });
+        await get().openPvpLobby();
+        return;
+      }
+      if (me.units.length === 0) {
+        set({ pvpMe: me, pvpBusy: false });
+        return;
+      }
+
+      const myTownUnits = pvpProfileToTownUnits(me);
+      const myBuildings = makeBattleBuildings(pvpProfileToGrid(me), me.researchedNodeIds).filter(
+        (b) => b.id !== 'enemy-base',
+      );
+      const battleBuildings = [...myBuildings, ...pvpEnemyBuildings(opp)];
+      const towerTimers: Record<string, number> = {};
+      battleBuildings.forEach((b) => {
+        if (b.type === 'tower') towerTimers[b.id] = 0;
+      });
+      const playerUnits = townUnitsToPlayerUnits(myTownUnits, me.formation, me.researchedNodeIds);
+      const enemyUnits = pvpEnemyUnits(opp);
+      const battleHero = createBattleHero(me.heroId, myTownUnits, me.researchedNodeIds);
+
+      set({
+        mode: 'battle',
+        pvpBusy: false,
+        pvpMe: me,
+        pvpResult: null,
+        pvp: {
+          opponentId: opp.id,
+          opponentName: opp.name,
+          opponentIsCpu: opp.isCpu,
+          opponentRating: opp.rating,
+          opponentPower: opp.power,
+          ratingBefore: me.rating,
+          elapsed: 0,
+          limit: PVP_TIME_LIMIT,
+        },
+        stageIndex: 0,
+        wave: 0,
+        waveTimer: 999,
+        strategyTimer: 0,
+        battleBuildings,
+        playerUnits,
+        enemyUnits,
+        battleHero,
+        projectiles: [],
+        towerTimers,
+        killedTownUnitIds: [],
+        battleInitialBuildingIds: [],
+        selectedTownUnitId: null,
+        selectedBarracksId: null,
+        message: `VS ${opp.name}！ 兵士${playerUnits.length}名 対 ${enemyUnits.length}名`,
+        messageTimer: 4,
+      });
+    } catch (e) {
+      console.error('PvP start failed', e);
+      set({ pvpBusy: false });
+    }
+  },
+
+  finishPvp: (outcome, reason) => {
+    const s = get();
+    const { pvp, pvpMe: me } = s;
+    if (!pvp || !me || s.mode !== 'battle') return;
+
+    const won = outcome === 'win';
+    const now = Date.now();
+    const delta = eloDelta(me.rating, pvp.opponentRating, won);
+    const ratingAfter = Math.max(0, me.rating + delta);
+    const goldReward = won ? Math.min(400, 40 + Math.round(pvp.opponentPower * 0.15)) : 10;
+
+    const meAfter: PvpProfile = {
+      ...me,
+      rating: ratingAfter,
+      wins: me.wins + (won ? 1 : 0),
+      losses: me.losses + (won ? 0 : 1),
+      updatedAt: now,
+    };
+
+    // 相手(CPU)の更新: 倒されたCPUはDBから消え、勝ったCPUは戦績が増える
+    let roster = s.pvpRoster;
+    const toUpsert: PvpProfile[] = [meAfter];
+    let opponentRemoved = false;
+    const opp = roster.find((p) => p.id === pvp.opponentId);
+    if (opp) {
+      if (won && opp.isCpu) {
+        opponentRemoved = true;
+        roster = roster.filter((p) => p.id !== opp.id);
+      } else {
+        const oppAfter: PvpProfile = {
+          ...opp,
+          wins: opp.wins + (won ? 0 : 1),
+          losses: opp.losses + (won ? 1 : 0),
+          rating: Math.max(100, opp.rating - delta),
+          updatedAt: now,
+        };
+        roster = roster.map((p) => (p.id === opp.id ? oppAfter : p));
+        toUpsert.push(oppAfter);
+      }
+    }
+
+    // CPUが減ってきたら自動で補充
+    const added = topUpCpuProfiles(roster, meAfter);
+    roster = [...roster, ...added];
+    toUpsert.push(...added);
+
+    const record: PvpBattleRecord = {
+      id: nanoid(),
+      at: now,
+      playerId: PLAYER_PROFILE_ID,
+      opponentId: pvp.opponentId,
+      opponentName: pvp.opponentName,
+      opponentIsCpu: pvp.opponentIsCpu,
+      outcome,
+      ratingBefore: me.rating,
+      ratingAfter,
+      goldReward,
+      durationSec: Math.round(pvp.elapsed),
+    };
+
+    // 画面には即時反映(DBへの保存はバックグラウンドで実行)
+    set({
+      mode: 'pvp_result',
+      pvp: null,
+      battleHero: null,
+      pvpMe: meAfter,
+      pvpRoster: roster,
+      pvpLog: [record, ...s.pvpLog].slice(0, 8),
+      pvpResult: {
+        outcome,
+        reason,
+        opponentName: pvp.opponentName,
+        ratingBefore: me.rating,
+        ratingAfter,
+        goldReward,
+        durationSec: Math.round(pvp.elapsed),
+        opponentRemoved,
+        cpuAdded: added.length,
+      },
+      resources: { ...s.resources, gold: s.resources.gold + goldReward },
+    });
+
+    void (async () => {
+      try {
+        await pvpRepo.upsertProfiles(toUpsert);
+        if (opponentRemoved) await pvpRepo.removeProfile(pvp.opponentId);
+        await pvpRepo.appendLog(record);
+      } catch (e) {
+        console.error('PvP save failed', e);
+      }
+    })();
+    // 報酬のゴールドを失わないようにセーブ
+    setTimeout(() => get().saveGame(), 100);
+  },
+
+  forfeitPvp: () => {
+    get().finishPvp('lose', 'forfeit');
+  },
+
+  backToPvpLobby: () => {
+    set({
+      mode: 'pvp_lobby',
+      pvp: null,
+      pvpResult: null,
+      battleHero: null,
+      playerUnits: [],
+      enemyUnits: [],
+      battleBuildings: [],
+      projectiles: [],
     });
   },
 
@@ -1774,7 +2129,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     let { wave, waveTimer, stageIndex, resources } = state;
     const strategy = state.battleStrategy;
     const strategyTimer = state.strategyTimer + dt;
-    const maxWaves = MAX_STAGE_WAVES[stageIndex] ?? 3;
+    // 対戦(PvP)ではウェーブ増援なし
+    const maxWaves = state.pvp ? 0 : (MAX_STAGE_WAVES[stageIndex] ?? 3);
     let newMsg = state.message;
     let newMsgTimer = msgTimer;
 
@@ -1797,13 +2153,13 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     for (let bi = 0; bi < newBuildings.length; bi++) {
       const b = newBuildings[bi];
-      if (b.faction !== 'player' || b.type !== 'tower') continue;
+      if (b.type !== 'tower') continue;
       newTowerTimers[b.id] = (newTowerTimers[b.id] ?? 0) + dt;
       if (newTowerTimers[b.id] >= TOWER_FIRE_RATE) {
         const tx = bWorldX(b.gridX);
         const tz = bWorldZ(b.gridZ);
         const target = allUnits.find(
-          (u) => u.faction === 'enemy' && dist(tx, tz, u.x, u.z) <= TOWER_RANGE
+          (u) => u.faction !== b.faction && dist(tx, tz, u.x, u.z) <= TOWER_RANGE
         );
         if (target) {
           newProjectiles.push({
@@ -1814,7 +2170,7 @@ export const useGameStore = create<GameState>((set, get) => ({
             targetX: target.x,
             targetZ: target.z,
             damage: Math.round(TOWER_DAMAGE * buildingLevelMultiplier(b.type, b.level)),
-            faction: 'player',
+            faction: b.faction,
             speed: 18,
             sourceId: b.id,
           });
@@ -2233,6 +2589,34 @@ export const useGameStore = create<GameState>((set, get) => ({
     const playerBaseAlive = survivingBuildings.some((b) => b.id === 'player-base');
     const enemyBaseAlive = survivingBuildings.some((b) => b.id === 'enemy-base');
 
+    // ── 対戦(PvP)の決着判定 ──────────────────────────────────────────────
+    // 本拠地の破壊、または制限時間(本拠地HP割合→残り兵力の順で判定)で決まる。
+    // 街の建物・兵士は減らさない(レーティングとゴールドだけが変わる)。
+    if (state.pvp) {
+      const pvpElapsed = state.pvp.elapsed + dt;
+      let outcome: PvpOutcome | null = null;
+      let reason: PvpEndReason = 'base';
+      if (!playerBaseAlive) {
+        outcome = 'lose';
+      } else if (!enemyBaseAlive) {
+        outcome = 'win';
+      } else if (pvpElapsed >= state.pvp.limit) {
+        reason = 'timeout';
+        const pb = survivingBuildings.find((b) => b.id === 'player-base');
+        const eb = survivingBuildings.find((b) => b.id === 'enemy-base');
+        const pRatio = pb ? pb.hp / pb.maxHp : 0;
+        const eRatio = eb ? eb.hp / eb.maxHp : 0;
+        const pHp = newPlayers.reduce((sum, u) => sum + u.hp, 0);
+        const eHp = newEnemies.reduce((sum, u) => sum + u.hp, 0);
+        outcome = eRatio < pRatio || (eRatio === pRatio && pHp > eHp) ? 'win' : 'lose';
+      }
+      if (outcome) {
+        set({ pvp: { ...state.pvp, elapsed: pvpElapsed } });
+        get().finishPvp(outcome, reason);
+        return;
+      }
+    }
+
     if (!playerBaseAlive) {
       const casualties = applyBattleCasualties({
         townGrid: state.townGrid, townUnits: state.townUnits,
@@ -2325,6 +2709,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       killedTownUnitIds: allKilledIds,
       strategyTimer,
       battleHero,
+      pvp: state.pvp ? { ...state.pvp, elapsed: state.pvp.elapsed + dt } : state.pvp,
     });
   },
 }));
