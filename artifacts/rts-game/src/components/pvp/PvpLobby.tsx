@@ -22,6 +22,15 @@ const cardStyle: CSSProperties = {
   padding: '14px 16px',
 };
 
+/** 大きい数を短く表示する (1234 → 1.2K, 1500000 → 1.5M) */
+function fmt(n: number): string {
+  const v = Math.floor(n);
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 10_000) return `${Math.round(v / 1000)}K`;
+  if (v >= 1_000) return `${(v / 1000).toFixed(1)}K`;
+  return String(v);
+}
+
 function unitSummary(profile: PvpProfile): string {
   const counts = new Map<string, number>();
   for (const u of profile.units) counts.set(u.type, (counts.get(u.type) ?? 0) + 1);
@@ -41,6 +50,8 @@ function OpponentCard({ cpu, myPower, disabled, onFight }: {
   const diff = cpu.difficulty ? DIFFICULTY_META[cpu.difficulty] : undefined;
   const formation = FORMATION_CONFIGS[cpu.formation];
   const towers = cpu.buildings.filter((b) => b.type === 'tower').length;
+  const walls = cpu.buildings.filter((b) => b.type === 'wall').length;
+  const res = cpu.resources;
   const ratio = myPower > 0 ? cpu.power / myPower : 1;
   const ratioColor = ratio > 1.15 ? '#ef4444' : ratio < 0.8 ? '#4caf50' : '#ffd166';
 
@@ -57,11 +68,20 @@ function OpponentCard({ cpu, myPower, disabled, onFight }: {
         </div>
         <div style={{ color: '#aaa', fontSize: 11, lineHeight: 1.7 }}>
           レート {cpu.rating} ｜ 本拠地 Lv.{cpu.townLevel + 1} ｜ 兵士 {cpu.units.length}名
-          {towers > 0 ? ` ｜ 🗼×${towers}` : ''}
+          {towers > 0 ? ` ｜ 🗼砲台×${towers}` : ''}
+          {walls > 0 ? ` ｜ 🧱壁×${walls}` : ''}
           <br />
           <span style={{ color: FORMATION_COLORS[cpu.formation] }}>{formation.icon} {formation.nameJP}</span>
           <span style={{ color: '#666' }}> ｜ </span>
           {unitSummary(cpu)}
+          {res && (
+            <>
+              <br />
+              <span style={{ color: '#ffd166' }}>
+                💰 奪える資源(半分): 🪙{fmt(res.gold / 2)} 🌾{fmt(res.food / 2)} 🪵{fmt(res.wood / 2)} 🪨{fmt(res.stone / 2)}
+              </span>
+            </>
+          )}
         </div>
       </div>
       <div style={{ textAlign: 'center', minWidth: 70 }}>
@@ -115,7 +135,7 @@ export function PvpLobby() {
       <div style={{ fontSize: 30, fontWeight: 900, color: '#ffd700' }}>🥊 ローカル対戦</div>
       <div style={{ color: '#888', fontSize: 12, textAlign: 'center', lineHeight: 1.7 }}>
         保存された自分のデータとCPUのデータを読み込んで戦います。<br />
-        街の建物・兵士は減りません。結果はレートとゴールドにすぐ反映されます。
+        街の建物・兵士は減りません。CPUの本拠地を倒すと、相手の所持資源の半分を獲得できます（上限を超えた分は切り捨て）。
       </div>
 
       {/* 自分のデータ */}
