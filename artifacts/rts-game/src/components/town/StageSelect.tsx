@@ -15,6 +15,7 @@ import {
 export function StageSelect() {
   const startBattle = useGameStore((s) => s.startBattle);
   const returnToTown = useGameStore((s) => s.returnToTown);
+  const openPvpLobby = useGameStore((s) => s.openPvpLobby);
   const currentStrategy = useGameStore((s) => s.battleStrategy);
   const currentFormation = useGameStore((s) => s.formation);
   const townLevel = useGameStore((s) => s.townLevel);
@@ -286,9 +287,23 @@ export function StageSelect() {
       </div>
 
       <button
-        onClick={returnToTown}
+        onClick={() => void openPvpLobby()}
         style={{
           marginTop: 32,
+          background: 'rgba(226,88,34,0.16)',
+          border: '1px solid rgba(226,88,34,0.55)',
+          borderRadius: 10,
+          color: '#ff9a6a', fontWeight: 700, fontSize: 14,
+          padding: '10px 28px', cursor: 'pointer',
+        }}
+      >
+        🥊 ローカル対戦（CPUと対戦）
+      </button>
+
+      <button
+        onClick={returnToTown}
+        style={{
+          marginTop: 12,
           background: 'rgba(255,255,255,0.08)',
           border: '1px solid rgba(255,255,255,0.2)',
           borderRadius: 10,
