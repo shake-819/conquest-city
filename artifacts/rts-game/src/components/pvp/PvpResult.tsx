@@ -14,6 +14,7 @@ export function PvpResult() {
 
   const won = result.outcome === 'win';
   const delta = result.ratingAfter - result.ratingBefore;
+  const hasLost = result.lootLost.gold + result.lootLost.food + result.lootLost.wood + result.lootLost.stone > 0;
 
   return (
     <div style={{
@@ -41,8 +42,20 @@ export function PvpResult() {
           ({delta >= 0 ? '+' : ''}{delta})
         </span>
         <br />
-        🪙 ゴールド +{result.goldReward}
+        {won && (result.loot.food + result.loot.wood + result.loot.stone > 0 || result.loot.gold > 0 || hasLost) ? (
+          <>
+            🪙 +{result.loot.gold.toLocaleString()}　🌾 +{result.loot.food.toLocaleString()}　🪵 +{result.loot.wood.toLocaleString()}　🪨 +{result.loot.stone.toLocaleString()}
+          </>
+        ) : (
+          <>🪙 ゴールド +{result.goldReward}</>
+        )}
       </div>
+
+      {won && hasLost && (
+        <div style={{ color: '#ffb74d', fontSize: 12, marginBottom: 14, lineHeight: 1.8 }}>
+          貯蔵上限を超えて切り捨てた分：🪙{result.lootLost.gold.toLocaleString()} 🌾{result.lootLost.food.toLocaleString()} 🪵{result.lootLost.wood.toLocaleString()} 🪨{result.lootLost.stone.toLocaleString()}
+        </div>
+      )}
 
       {(result.opponentRemoved || result.cpuAdded > 0) && (
         <div style={{ color: '#87ceeb', fontSize: 12, marginBottom: 20, lineHeight: 1.8 }}>
