@@ -14,6 +14,8 @@ export function BattleUI() {
   const message = useGameStore((s) => s.message);
   const messageTimer = useGameStore((s) => s.messageTimer);
   const returnToTown = useGameStore((s) => s.returnToTown);
+  const pvp = useGameStore((s) => s.pvp);
+  const forfeitPvp = useGameStore((s) => s.forfeitPvp);
   const maxWaves = MAX_STAGE_WAVES[stageIndex] ?? 3;
   const [resourcesHovered, setResourcesHovered] = useState(false);
   const battleHero = useGameStore((s) => s.battleHero);
@@ -51,15 +53,31 @@ export function BattleUI() {
         onMouseLeave={() => setResourcesHovered(false)}
       >
         <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-          <span style={{ color: '#87ceeb', fontWeight: 700 }}>
-            ステージ {STAGE_NAMES[stageIndex]} ｜ ウェーブ {wave}/{maxWaves}
-          </span>
-          <span style={{
-            color: waveTimer <= 10 ? '#ff6644' : '#fff',
-            fontWeight: 700, fontSize: 13,
-          }}>
-            次の波 {Math.max(0, Math.ceil(waveTimer))}s
-          </span>
+          {pvp ? (
+            <>
+              <span style={{ color: '#ff9a6a', fontWeight: 700 }}>
+                🥊 VS {pvp.opponentName}（レート {pvp.opponentRating}）
+              </span>
+              <span style={{
+                color: pvp.limit - pvp.elapsed <= 30 ? '#ff6644' : '#fff',
+                fontWeight: 700, fontSize: 13,
+              }}>
+                残り {Math.max(0, Math.ceil(pvp.limit - pvp.elapsed))}s
+              </span>
+            </>
+          ) : (
+            <>
+              <span style={{ color: '#87ceeb', fontWeight: 700 }}>
+                ステージ {STAGE_NAMES[stageIndex]} ｜ ウェーブ {wave}/{maxWaves}
+              </span>
+              <span style={{
+                color: waveTimer <= 10 ? '#ff6644' : '#fff',
+                fontWeight: 700, fontSize: 13,
+              }}>
+                次の波 {Math.max(0, Math.ceil(waveTimer))}s
+              </span>
+            </>
+          )}
         </div>
         <div style={{ display: 'flex', gap: 12, alignItems: 'center', fontSize: 12 }}>
           <span style={{ color: '#4488ff' }}>味方: {playerUnits.length}</span>
@@ -219,7 +237,7 @@ export function BattleUI() {
             WASD：カメラ移動<br />ホイール：ズーム
           </div>
           <button
-            onClick={returnToTown}
+            onClick={pvp ? forfeitPvp : returnToTown}
             style={{
               background: 'rgba(255,255,255,0.08)',
               border: '1px solid rgba(255,255,255,0.2)',
@@ -228,7 +246,7 @@ export function BattleUI() {
               padding: '8px 16px', cursor: 'pointer',
             }}
           >
-            🏠 街へ戻る
+            {pvp ? '🏳️ 降参する' : '🏠 街へ戻る'}
           </button>
         </div>
       </div>
