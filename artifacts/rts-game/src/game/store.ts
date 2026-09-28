@@ -11,6 +11,7 @@ import type {
   WoundedUnit,
   BattleStrategy,
   FormationType,
+  FactionType,
   BattleHero,
 } from './types';
 import {
@@ -91,6 +92,54 @@ function bWorldZ(row: number) {
 
 function dist(ax: number, az: number, bx: number, bz: number) {
   return Math.sqrt((ax - bx) ** 2 + (az - bz) ** 2);
+}
+
+// ─── 建物との当たり判定(すり抜け防止) ───────────────────────────────────
+// 相手陣営の建物は通れない。ぶつかったら壁沿いに滑って回り込み、
+// 進めないときはその建物を攻撃して壊す。自分側の建物は素通りできる。
+const BUILDING_HALF = 1.0;
+const UNIT_RADIUS = 0.35;
+
+function findBlockingBuilding(x: number, z: number, faction: FactionType, buildings: Building[]): Building | undefined {
+  const r = BUILDING_HALF + UNIT_RADIUS;
+  return buildings.find(
+    (b) =>
+      b.faction !== faction &&
+      b.hp > 0 &&
+      Math.abs(x - bWorldX(b.gridX)) < r &&
+      Math.abs(z - bWorldZ(b.gridZ)) < r,
+  );
+}
+
+/** 前の位置(prev)から新しい位置(x,z)へ動いた結果を、建物にめり込まないよう補正する */
+function resolveBuildingCollision(
+  prevX: number, prevZ: number, x: number, z: number,
+  faction: FactionType, buildings: Building[],
+): { x: number; z: number; blocker?: Building } {
+  const blocker = findBlockingBuilding(x, z, faction, buildings);
+  if (!blocker) return { x, z };
+
+  let nx = x;
+  let nz = z;
+  if (!findBlockingBuilding(x, prevZ, faction, buildings)) {
+    nz = prevZ; // x方向にだけ進む(壁沿いに横へ滑る)
+  } else if (!findBlockingBuilding(prevX, z, faction, buildings)) {
+    nx = prevX; // z方向にだけ進む
+  } else {
+    nx = prevX;
+    nz = prevZ;
+  }
+
+  // 出撃時などに最初から建物の中にいた場合は、いちばん近い辺の外へ押し出す
+  const inside = findBlockingBuilding(nx, nz, faction, buildings);
+  if (inside) {
+    const r = BUILDING_HALF + UNIT_RADIUS + 0.01;
+    const dx = nx - bWorldX(inside.gridX);
+    const dz = nz - bWorldZ(inside.gridZ);
+    if (Math.abs(dx) >= Math.abs(dz)) nx = bWorldX(inside.gridX) + (dx >= 0 ? r : -r);
+    else nz = bWorldZ(inside.gridZ) + (dz >= 0 ? r : -r);
+  }
+  return { x: nx, z: nz, blocker };
 }
 
 function unitDamageWithHero(unit: Unit, hero: BattleHero | null): number {
@@ -2288,8 +2337,16 @@ export const useGameStore = create<GameState>((set, get) => ({
         } else {
           battleHero.state = 'moving';
           const angle = Math.atan2(heroTarget.z - battleHero.z, heroTarget.x - battleHero.x);
-          battleHero.x += Math.cos(angle) * battleHero.speed * dt;
-          battleHero.z += Math.sin(angle) * battleHero.speed * dt;
+          const heroPrevX = battleHero.x;
+          const heroPrevZ = battleHero.z;
+          const moved = resolveBuildingCollision(
+            heroPrevX, heroPrevZ,
+            heroPrevX + Math.cos(angle) * battleHero.speed * dt,
+            heroPrevZ + Math.sin(angle) * battleHero.speed * dt,
+            'player', newBuildings,
+          );
+          battleHero.x = moved.x;
+          battleHero.z = moved.z;
         }
       } else {
         battleHero.state = 'idle';
@@ -2564,6 +2621,32 @@ export const useGameStore = create<GameState>((set, get) => ({
         u.x += Math.cos(ang) * unitSpeedWithHero(u, battleHero) * dt;
       }
       updatedUnits.push(u);
+    }
+
+    // ── 建物のすり抜け防止 ──────────────────────────────────────────────
+    // 相手の建物にめり込んだ兵士は、壁沿いに滑って回り込む。
+    // 建物に行く手を阻まれたら、その建物を攻撃して壊す。
+    {
+      const prevPos = new Map<string, { x: number; z: number }>();
+      for (const o of allUnits) prevPos.set(o.id, { x: o.x, z: o.z });
+      const solid = newBuildings.filter((b) => b.hp > 0 && !destroyedIds.has(b.id));
+      for (let i = 0; i < updatedUnits.length; i++) {
+        const u = updatedUnits[i];
+        const prev = prevPos.get(u.id);
+        if (!prev) continue;
+        const r = resolveBuildingCollision(prev.x, prev.z, u.x, u.z, u.faction, solid);
+        if (!r.blocker) continue;
+        let next: Unit = { ...u, x: r.x, z: r.z };
+        if (next.attackTimer <= 0) {
+          const bi = newBuildings.findIndex((b) => b.id === r.blocker!.id);
+          if (bi >= 0 && !destroyedIds.has(r.blocker.id)) {
+            newBuildings[bi] = { ...newBuildings[bi], hp: newBuildings[bi].hp - unitDamageWithHero(next, battleHero) };
+            if (newBuildings[bi].hp <= 0) destroyedIds.add(newBuildings[bi].id);
+            next = { ...next, attackTimer: next.attackCooldown, state: 'attacking' };
+          }
+        }
+        updatedUnits[i] = next;
+      }
     }
 
     // Apply accumulated damage from this tick to all processed units.
