@@ -59,7 +59,7 @@ import {
 } from './research';
 import { pvpRepo } from './pvp/repository';
 import { buildPlayerProfile } from './pvp/snapshot';
-import { topUpCpuProfiles } from './pvp/cpu';
+import { topUpCpuProfiles, normalizeCpuProfile } from './pvp/cpu';
 import { PLAYER_PROFILE_ID } from './pvp/types';
 import type {
   PvpBattleRecord,
@@ -269,7 +269,7 @@ function createBattleHero(selectedHeroId: string | null, townUnits: TownUnit[], 
 
 // ─── ローカル対戦(PvP) ─────────────────────────────────────────────────
 const PVP_TIME_LIMIT = 180;
-const PVP_MAX_ENEMY_TOWERS = 6;
+const PVP_LOOT_RATE = 0.5; // 本拠地を倒したとき、相手の所持資源のうち獲得できる割合
 
 /** Eloレーティングの増減(K=32) */
 function eloDelta(myRating: number, oppRating: number, won: boolean): number {
@@ -308,7 +308,7 @@ function pvpProfileToGrid(p: PvpProfile): TownGrid {
   return grid;
 }
 
-/** 相手の本拠地と防衛タワー(戦場の右側に鏡写しで配置) */
+/** 相手の本拠地と、壁・砲台・一般建物(戦場の右側に鏡写しで配置) */
 function pvpEnemyBuildings(opp: PvpProfile): Building[] {
   const baseHp = BUILDING_CONFIGS.townhall.maxHp;
   const buildings: Building[] = [
@@ -324,24 +324,29 @@ function pvpEnemyBuildings(opp: PvpProfile): Building[] {
       productionTimer: 0,
     },
   ];
-  opp.buildings
-    .filter((b) => b.type === 'tower')
-    .slice(0, PVP_MAX_ENEMY_TOWERS)
-    .forEach((t, i) => {
-      const bCol = Math.min(t.col + 1, PLAYER_ZONE_COLS - 1);
-      const maxHp = Math.round((BUILDING_CONFIGS.tower?.maxHp ?? 200) * buildingLevelMultiplier('tower', t.level));
-      buildings.push({
-        id: `enemy-tower-${i}`,
-        type: 'tower',
-        gridX: BATTLE_COLS - 1 - bCol,
-        gridZ: Math.min(BATTLE_ROWS - 1, Math.floor(t.row * (BATTLE_ROWS / TOWN_ROWS))),
-        hp: maxHp,
-        maxHp,
-        faction: 'enemy',
-        level: t.level,
-        productionTimer: 0,
-      });
+  const occupied = new Set<string>([`${BATTLE_COLS - 2},${Math.floor(BATTLE_ROWS / 2)}`]);
+  opp.buildings.forEach((e, i) => {
+    if (e.type === 'townhall') return;
+    const bCol = Math.min(e.col + 1, PLAYER_ZONE_COLS - 1);
+    const gridX = BATTLE_COLS - 1 - bCol;
+    const gridZ = Math.min(BATTLE_ROWS - 1, Math.floor(e.row * (BATTLE_ROWS / TOWN_ROWS)));
+    const key = `${gridX},${gridZ}`;
+    if (occupied.has(key)) return; // 同じマスに重ならないようにする
+    occupied.add(key);
+    const cfgHp = BUILDING_CONFIGS[e.type]?.maxHp ?? 100;
+    const maxHp = Math.round(cfgHp * buildingLevelMultiplier(e.type, e.level));
+    buildings.push({
+      id: `enemy-${e.type}-${i}`,
+      type: e.type,
+      gridX,
+      gridZ,
+      hp: maxHp,
+      maxHp,
+      faction: 'enemy',
+      level: e.level,
+      productionTimer: 0,
     });
+  });
   return buildings;
 }
 
@@ -900,7 +905,16 @@ export const useGameStore = create<GameState>((set, get) => ({
 
       // 2) CPUが減っていたら自動で追加
       const all = await pvpRepo.listProfiles();
-      let cpus = all.filter((p) => p.isCpu);
+      // 古い保存データのCPU(資源・壁なし)は新しい仕様に引き上げる
+      const upgraded: PvpProfile[] = [];
+      let cpus = all
+        .filter((p) => p.isCpu)
+        .map((p) => {
+          const n = normalizeCpuProfile(p);
+          if (n !== p) upgraded.push(n);
+          return n;
+        });
+      if (upgraded.length > 0) await pvpRepo.upsertProfiles(upgraded);
       const added = topUpCpuProfiles(cpus, me);
       if (added.length > 0) {
         await pvpRepo.upsertProfiles(added);
@@ -938,7 +952,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       );
 
       // DBから自分と相手のデータを読み込んで戦闘を組み立てる
-      const [me, opp] = await Promise.all([pvpRepo.getProfile(PLAYER_PROFILE_ID), pvpRepo.getProfile(opponentId)]);
+      const [me, oppRaw] = await Promise.all([pvpRepo.getProfile(PLAYER_PROFILE_ID), pvpRepo.getProfile(opponentId)]);
+      const opp = oppRaw ? normalizeCpuProfile(oppRaw) : null;
       if (!me || !opp) {
         set({ pvpBusy: false });
         await get().openPvpLobby();
@@ -1009,7 +1024,33 @@ export const useGameStore = create<GameState>((set, get) => ({
     const now = Date.now();
     const delta = eloDelta(me.rating, pvp.opponentRating, won);
     const ratingAfter = Math.max(0, me.rating + delta);
-    const goldReward = won ? Math.min(400, 40 + Math.round(pvp.opponentPower * 0.15)) : 10;
+
+    // 相手(CPU)を倒したら、相手の所持資源の半分を獲得する。
+    // 自分の貯蔵上限を超えた分は切り捨て。負けたときは慰めのゴールドだけ。
+    const oppForLoot = s.pvpRoster.find((p) => p.id === pvp.opponentId);
+    const caps = resourceCapsForLevel(s.townLevel);
+    const noRes: Resources = { gold: 0, food: 0, wood: 0, stone: 0 };
+    const loot: Resources = { ...noRes };
+    const lootLost: Resources = { ...noRes };
+    let goldReward = 10;
+    if (won && oppForLoot?.isCpu && oppForLoot.resources) {
+      const keys: Array<keyof Resources> = ['gold', 'food', 'wood', 'stone'];
+      for (const k of keys) {
+        const half = Math.floor(oppForLoot.resources[k] * PVP_LOOT_RATE);
+        const room = Math.max(0, caps[k] - s.resources[k]);
+        loot[k] = Math.min(half, room);
+        lootLost[k] = half - loot[k];
+      }
+      goldReward = loot.gold;
+    } else if (won) {
+      goldReward = 0;
+    }
+    const newResources: Resources = {
+      gold: s.resources.gold + goldReward,
+      food: s.resources.food + loot.food,
+      wood: s.resources.wood + loot.wood,
+      stone: s.resources.stone + loot.stone,
+    };
 
     const meAfter: PvpProfile = {
       ...me,
@@ -1057,6 +1098,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       ratingBefore: me.rating,
       ratingAfter,
       goldReward,
+      loot,
       durationSec: Math.round(pvp.elapsed),
     };
 
@@ -1075,11 +1117,13 @@ export const useGameStore = create<GameState>((set, get) => ({
         ratingBefore: me.rating,
         ratingAfter,
         goldReward,
+        loot,
+        lootLost,
         durationSec: Math.round(pvp.elapsed),
         opponentRemoved,
         cpuAdded: added.length,
       },
-      resources: { ...s.resources, gold: s.resources.gold + goldReward },
+      resources: newResources,
     });
 
     void (async () => {
