@@ -5,12 +5,15 @@ import { StageSelect } from '../components/town/StageSelect';
 import { BattleSettings } from '../components/town/BattleSettings';
 import { BattleScene } from '../components/battle/BattleScene';
 import { BattleUI } from '../components/battle/BattleUI';
+import { PvpLobby } from '../components/pvp/PvpLobby';
+import { PvpResult } from '../components/pvp/PvpResult';
 
 
 function MenuScreen() {
   const startTown = useGameStore((s) => s.startTown);
   const loadGame = useGameStore((s) => s.loadGame);
   const goToBattleSettings = useGameStore((s) => s.goToBattleSettings);
+  const openPvpLobby = useGameStore((s) => s.openPvpLobby);
   const hasSave = useGameStore((s) => s.hasSaveData)();
 
   return (
@@ -94,6 +97,27 @@ function MenuScreen() {
       >
         ⚙️ 戦術・陣形を設定
       </button>
+      {hasSave && (
+        <button
+          onClick={() => {
+            if (loadGame()) void openPvpLobby();
+          }}
+          style={{
+            marginTop: 10,
+            background: 'rgba(226,88,34,0.16)',
+            border: '1px solid rgba(226,88,34,0.55)',
+            borderRadius: 10,
+            color: '#ff9a6a',
+            fontWeight: 700,
+            fontSize: 14,
+            padding: '10px 22px',
+            cursor: 'pointer',
+            fontFamily: 'sans-serif',
+          }}
+        >
+          🥊 ローカル対戦
+        </button>
+      )}
     </div>
   );
 }
@@ -235,14 +259,16 @@ export function GamePage() {
 
       {mode === 'stage_select' && <StageSelect />}
       {mode === 'battle_settings' && <BattleSettings />}
+      {mode === 'pvp_lobby' && <PvpLobby />}
 
-      {(mode === 'battle' || mode === 'defeat' || mode === 'stage_clear' || mode === 'victory') && (
+      {(mode === 'battle' || mode === 'defeat' || mode === 'stage_clear' || mode === 'victory' || mode === 'pvp_result') && (
         <>
           <BattleScene />
           {mode === 'battle' && <BattleUI />}
           {mode === 'stage_clear' && <StageClearScreen />}
           {mode === 'victory' && <VictoryScreen />}
           {mode === 'defeat' && <DefeatScreen />}
+          {mode === 'pvp_result' && <PvpResult />}
         </>
       )}
     </div>
