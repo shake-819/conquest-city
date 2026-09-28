@@ -48,7 +48,7 @@ export function BattleSettings() {
   const selectedStrategy = STRATEGIES.find((option) => option.value === currentStrategy) ?? STRATEGIES[0];
   const selectedFormation = FORMATION_CONFIGS[currentFormation];
 
-  const backLabel = origin === 'menu' ? '← ホームへ戻る' : origin === 'stage_select' ? '← 出撃選択へ戻る' : '← 街へ戻る';
+  const backLabel = origin === 'menu' ? '← ホームへ戻る' : origin === 'stage_select' ? '← 出撃選択へ戻る' : origin === 'pvp_lobby' ? '← 対戦ロビーへ戻る' : '← 街へ戻る';
 
   return (
     <div style={{
@@ -134,7 +134,7 @@ export function BattleSettings() {
       </section>
 
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center', marginTop: 22 }}>
-        {origin !== 'menu' && (
+        {origin !== 'menu' && origin !== 'pvp_lobby' && (
           <button onClick={goToStageSelect} style={{ background: 'linear-gradient(135deg, #e25822, #a93216)', border: 'none', borderRadius: 9, color: '#fff', fontWeight: 800, padding: '10px 20px', cursor: 'pointer' }}>
             ⚔️ この設定で出撃先を選ぶ
           </button>
